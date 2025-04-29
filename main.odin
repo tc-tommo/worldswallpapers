@@ -2,6 +2,7 @@ package win32_wallpaper_window
 
 import win "core:sys/windows"
 import gl "vendor:opengl"
+import "core:fmt"
 
 enum_func :: proc "stdcall" (hwnd: win.HWND, lparam: win.LPARAM) -> win.BOOL {
     defview := win.FindWindowExW(hwnd, nil, win.L("SHELLDLL_DefView"), nil)
@@ -17,6 +18,13 @@ main :: proc() {
 	assert(instance != nil, "Failed to fetch current instance")
 	class_name := win.L("Windows Window")
 
+    pfd : win.PIXELFORMATDESCRIPTOR = {
+        nSize = size_of(win.PIXELFORMATDESCRIPTOR),
+        nVersion = 1,
+        dwFlags = win.PFD_DRAW_TO_WINDOW | win.PFD_SUPPORT_OPENGL | win.PFD_DOUBLEBUFFER,
+        iPixelType = win.PFD_TYPE_RGBA,
+        cColorBits = 32,
+    }   
 	cls := win.WNDCLASSW {
 		lpfnWndProc = win_proc,
 		lpszClassName = class_name,
@@ -45,9 +53,30 @@ main :: proc() {
 
     win.SetParent(hwnd, wallpaper_hwnd)
 
+    hdc := win.GetDC(hwnd)
+    assert(hdc != nil, "Failed to get device context")
 
+    pixel_format := win.ChoosePixelFormat(hdc, &pfd)
+    assert(pixel_format != 0, "Failed to choose pixel format")
+    win.SetPixelFormat(hdc, pixel_format, &pfd)
 
-    gl.load_3_3()
+    hglrc := win.wglCreateContext(hdc)
+    assert(hglrc != nil, "Failed to create OpenGL context")
+
+    win.wglMakeCurrent(hdc, hglrc)
+    defer win.wglMakeCurrent(nil, nil)
+    defer win.wglDeleteContext(hglrc)
+
+    set_proc_address :: proc(p: rawptr, name: cstring) {
+        (cast(^rawptr)p)^ = win.wglGetProcAddress(&name[0]);
+    }
+
+    gl.load_up_to(3, 3, set_proc_address)
+
+    gl.Viewport(0, 0, i32(width), i32(height))
+
+    win.ShowWindow(hwnd, win.SW_HIDE)
+
 
 	assert(hwnd != nil, "Window creation Failed")
 	msg: win.MSG
@@ -67,45 +96,3 @@ win_proc :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT, wparam: win.WPARAM, l
 	return win.DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-
-load_wglCreateContextAttribsARB :: proc(hdc: windows.HDC) -> (proc "c" (windows.HDC, windows.HGLRC, [^]c.int) -> windows.HGLRC) {
-    return cast(proc "c" (windows.HDC, windows.HGLRC, [^]c.int) -> windows.HGLRC) windows.wglGetProcAddress("wglCreateContextAttribsARB")
-}
-
-create_modern_opengl_context :: proc(hwnd: windows.HWND) -> (hglrc: windows.HGLRC, success: bool) {
-    hdc := windows.GetDC(hwnd)
-    defer windows.ReleaseDC(hwnd, hdc)
-
-    // Set pixel format as above...
-
-    // Create a temporary context to load extensions
-    temp_hglrc := windows.wglCreateContext(hdc)
-    if temp_hglrc == nil {
-        return nil, false
-    }
-    defer windows.wglDeleteContext(temp_hglrc)
-
-    windows.wglMakeCurrent(hdc, temp_hglrc)
-
-    // Load wglCreateContextAttribsARB
-    wglCreateContextAttribsARB := load_wglCreateContextAttribsARB(hdc)
-    if wglCreateContextAttribsARB == nil {
-        return nil, false
-    }
-
-    // Create modern context (e.g., OpenGL 3.3 core)
-    attribs := [?]c.int{
-        windows.WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-        windows.WGL_CONTEXT_MINOR_VERSION_ARB, 3,
-        windows.WGL_CONTEXT_PROFILE_MASK_ARB,  windows.WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-        0,
-    }
-
-    hglrc = wglCreateContextAttribsARB(hdc, nil, &attribs[0])
-    if hglrc == nil {
-        return nil, false
-    }
-
-    windows.wglMakeCurrent(hdc, hglrc)
-    return hglrc, true
-}
